@@ -1,4 +1,5 @@
 #include "expression.h"
+#include "attribute.h"
 #include "result_processor.h"
 
 static int evalInternal(ExprEval *eval, const RSExpr *e, RSValue *res);
@@ -7,7 +8,8 @@ static void setReferenceValue(RSValue *dst, RSValue *src) {
   RSValue_MakeReference(dst, src);
 }
 
-extern int func_exists(ExprEval *ctx, RSValue *result, RSValue **argv, size_t argc, QueryError *err);
+extern int func_exists(ExprEval *ctx, RSValue *result, RSValue **argv, size_t argc,
+                       QueryError *err);
 
 static int evalFunc(ExprEval *eval, const RSFunctionExpr *f, RSValue *result) {
   int rc = EXPR_EVAL_ERR;
@@ -22,8 +24,7 @@ static int evalFunc(ExprEval *eval, const RSFunctionExpr *f, RSValue *result) {
     args[ii] = (RSValue)RSVALUE_STATIC;
     argspp[ii] = &args[ii];
     int internalRes = evalInternal(eval, f->args->args[ii], &args[ii]);
-    if (internalRes == EXPR_EVAL_ERR ||
-        (internalRes == EXPR_EVAL_NULL && f->Call != func_exists)) {
+    if (internalRes == EXPR_EVAL_ERR || (internalRes == EXPR_EVAL_NULL && f->Call != func_exists)) {
       // TODO: Free other results
       goto cleanup;
     }
@@ -204,6 +205,12 @@ static int evalProperty(ExprEval *eval, const RSLookupExpr *e, RSValue *res) {
   return EXPR_EVAL_OK;
 }
 
+static int evalAttribute(ExprEval *eval, int code, RSValue *res) {
+  ExprAttributeCallback cb = Expr_GetAttributeCallback(code);
+  assert(cb);
+  return cb(code, eval, eval->res, res);
+}
+
 static int evalInternal(ExprEval *eval, const RSExpr *e, RSValue *res) {
   RSValue_Clear(res);
   switch (e->t) {
@@ -220,6 +227,10 @@ static int evalInternal(ExprEval *eval, const RSExpr *e, RSValue *res) {
       return evalPredicate(eval, &e->pred, res);
     case RSExpr_Inverted:
       return evalInverted(eval, &e->inverted, res);
+    case RSExpr_Attribute:
+      return evalAttribute(eval, e->attribute, res);
+    case RSExpr_Metafunc:
+      return RSMetaOp_Eval(eval, &e->meta, res);
   }
   return EXPR_EVAL_ERR;  // todo: this can not happened
 }
