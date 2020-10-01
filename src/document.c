@@ -19,7 +19,9 @@
 
 // Memory pool for RSAddDocumentContext contexts
 static mempool_t *actxPool_g = NULL;
+
 extern RedisModuleCtx *RSDummyContext;
+
 // For documentation, see these functions' definitions
 static void *allocDocumentContext(void) {
   // See if there's one in the pool?
@@ -156,8 +158,7 @@ static int AddDocumentCtx_SetDocument(RSAddDocumentCtx *aCtx, IndexSpec *sp, Doc
   return 0;
 }
 
-RSAddDocumentCtx *NewAddDocumentCtx(IndexSpec *sp, Document *b, QueryError *status) {
-
+RSAddDocumentCtx *NewAddDocumentCtx(IndexSpec *sp, Document *doc, QueryError *status) {
   if (!actxPool_g) {
     mempool_options mopts = {.initialCap = 16,
                              .alloc = allocDocumentContext,
@@ -192,7 +193,7 @@ RSAddDocumentCtx *NewAddDocumentCtx(IndexSpec *sp, Document *b, QueryError *stat
   Indexer_Incref(aCtx->indexer);
 
   // Assign the document:
-  if (AddDocumentCtx_SetDocument(aCtx, sp, b, aCtx->doc.numFields) != 0) {
+  if (AddDocumentCtx_SetDocument(aCtx, sp, doc, aCtx->doc.numFields) != 0) {
     *status = aCtx->status;
     aCtx->status.detail = NULL;
     mempool_release(actxPool_g, aCtx);
@@ -214,7 +215,7 @@ RSAddDocumentCtx *NewAddDocumentCtx(IndexSpec *sp, Document *b, QueryError *stat
     aCtx->fwIdx->smap = NULL;
   }
 
-  aCtx->tokenizer = GetTokenizer(b->language, aCtx->fwIdx->stemmer, sp->stopwords);
+  aCtx->tokenizer = GetTokenizer(doc->language, aCtx->fwIdx->stemmer, sp->stopwords);
   aCtx->doc.docId = 0;
   return aCtx;
 }
@@ -596,8 +597,35 @@ int Document_AddToIndexes(RSAddDocumentCtx *aCtx) {
           }
           RedisModule_ThreadSafeContextUnlock(RSDummyContext);
         }
-        ourRv = REDISMODULE_ERR;
-        goto cleanup;
+
+        if (RSGlobalConfig.schemaMismatchPolicy == SchemaMismatchPolicy_Skip) {
+          ourRv = REDISMODULE_ERR;
+          goto cleanup;
+        } else if (RSGlobalConfig.schemaMismatchPolicy == SchemaMismatchPolicy_Block){
+          // TODO: fail HSET
+        }
+
+        // Our policy is SchemaMismatchPolicy_Partial
+        // field failed to index. we remove the field from doc and continue
+        /*
+         * TODO: once we fix issue of two documents copies, we should
+         * release failed fields here
+         * 
+        if (doc->flags & DOCUMENT_F_OWNSTRINGS) {
+          rm_free((void *)doc->fields[i].name);
+        }
+        if (doc->fields[i].text) {
+          RedisModule_FreeString(RSDummyContext, doc->fields[i].text);
+        } */
+        uint32_t lastField = doc->numFields - 1;
+        if (i < lastField) {
+          DocumentField tmp = doc->fields[i];
+          doc->fields[i] = doc->fields[lastField];
+          doc->fields[lastField] = tmp;
+          --i;
+        }
+        --doc->numFields;
+        continue;
       }
     }
   }
