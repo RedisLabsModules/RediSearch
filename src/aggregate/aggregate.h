@@ -18,9 +18,10 @@ typedef enum {
   QEXEC_F_IS_EXTENDED = 0x01,    // Contains aggregations or projections
   QEXEC_F_SEND_SCORES = 0x02,    // Output: Send scores with each result
   QEXEC_F_SEND_SORTKEYS = 0x04,  // Sent the key used for sorting, for each result
-  QEXEC_F_SEND_NOFIELDS = 0x08,  // Don't send the contents of the fields
+  QEXEC_F_SEND_NOFIELDS = 0x08,  // Don't send the content of the fields
   QEXEC_F_SEND_PAYLOADS = 0x10,  // Sent the payload set with ADD
   QEXEC_F_IS_CURSOR = 0x20,      // Is a cursor-type query
+  QEXEC_F_EXPLICIT_RETURN = 0x40,  // Send the content of explicit fields
 
   /** Don't use concurrent execution */
   QEXEC_F_SAFEMODE = 0x100,
@@ -52,6 +53,9 @@ typedef enum {
 #define IsCount(r) ((r)->reqflags & QEXEC_F_NOROWS)
 #define IsSearch(r) ((r)->reqflags & QEXEC_F_IS_SEARCH)
 #define IsProfile(r) ((r)->reqflags & QEXEC_F_PROFILE)
+#define IsLazyLoad(r) (!((r)->reqflags & QEXEC_F_IS_EXTENDED) &&      \
+                       !((r)->reqflags & QEXEC_F_EXPLICIT_RETURN) &&  \
+                       !((r)->reqflags & QEXEC_F_SEND_HIGHLIGHT))
 
 typedef enum {
   /* Received EOF from iterator */

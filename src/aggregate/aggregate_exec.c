@@ -7,6 +7,7 @@
 #include "score_explain.h"
 #include "commands.h"
 #include "profile.h"
+#include "rs_hash.h"
 
 typedef enum { COMMAND_AGGREGATE, COMMAND_SEARCH, COMMAND_EXPLAIN } CommandType;
 static void runCursor(RedisModuleCtx *outputCtx, Cursor *cursor, size_t num);
@@ -29,6 +30,8 @@ static const RSValue *getSortKey(AREQ *req, const SearchResult *r, const PLN_Arr
 
 /** Cached variables to avoid serializeResult retrieving these each time */
 typedef struct {
+  SchemaRule *rule;                    // used to filter out language, score and payload fields
+  arrayof(void *) arr;                 // used to reply all fields
   const RLookup *lastLk;
   const PLN_ArrangeStep *lastAstp;
 } cachedVars;
@@ -112,29 +115,34 @@ static size_t serializeResult(AREQ *req, RedisModuleCtx *outctx, const SearchRes
   }
 
   if (!(options & QEXEC_F_SEND_NOFIELDS)) {
-    const RLookup *lk = cv->lastLk;
     count++;
+    if (!IsLazyLoad(req)) {
+      const RLookup *lk = cv->lastLk;
 
-    // Get the number of fields in the reply. 
-    // Excludes hidden fields, fields not included in RETURN and, score and language fields.
-    SchemaRule *rule = req->sctx ? req->sctx->spec->rule : NULL;
-    int excludeFlags = RLOOKUP_F_HIDDEN;
-    int requiredFlags = (req->outFields.explicitReturn ? RLOOKUP_F_EXPLICITRETURN : 0);
-    int skipFieldIndex[lk->rowlen]; // Array has `0` for fields which will be skipped
-    memset(skipFieldIndex, 0, lk->rowlen * sizeof(*skipFieldIndex));
-    size_t nfields = RLookup_GetLength(lk, &r->rowdata, skipFieldIndex, requiredFlags, excludeFlags, rule);
+      // Get the number of fields in the reply.
+      // Excludes hidden fields, fields not included in RETURN and, score, payload and language fields.
+      int excludeFlags = RLOOKUP_F_HIDDEN;
+      int requiredFlags = (req->outFields.explicitReturn ? RLOOKUP_F_EXPLICITRETURN : 0);
+      int skipFieldIndex[lk->rowlen]; // Array has `0` for fields which will be skipped
+      memset(skipFieldIndex, 0, lk->rowlen * sizeof(*skipFieldIndex));
+      size_t nfields = RLookup_GetLength(lk, &r->rowdata, skipFieldIndex, requiredFlags, excludeFlags, cv->rule);
 
-    RedisModule_ReplyWithArray(outctx, nfields * 2);
-    int i = 0;
-    for (const RLookupKey *kk = lk->head; kk; kk = kk->next) {
-      if (!skipFieldIndex[i++]) {
-        continue;
+      RedisModule_ReplyWithArray(outctx, nfields * 2);
+      int i = 0;
+      for (const RLookupKey *kk = lk->head; kk; kk = kk->next) {
+        if (!skipFieldIndex[i++]) {
+          continue;
+        }
+        const RSValue *v = RLookup_GetItem(kk, &r->rowdata);
+        RS_LOG_ASSERT(v, "v was found in RLookup_GetLength iteration")
+
+        RedisModule_ReplyWithStringBuffer(outctx, kk->name, strlen(kk->name));
+        RSValue_SendReply(outctx, v, req->reqflags & QEXEC_F_TYPED);
       }
-      const RSValue *v = RLookup_GetItem(kk, &r->rowdata);
-      RS_LOG_ASSERT(v, "v was found in RLookup_GetLength iteration")
-
-      RedisModule_ReplyWithStringBuffer(outctx, kk->name, strlen(kk->name));
-      RSValue_SendReply(outctx, v, req->reqflags & QEXEC_F_TYPED);
+    } else {
+      // Reply with all fields
+      char *keyName = dmd ? dmd->keyPtr : DocTable_Get(&req->sctx->spec->docs, r->docId)->keyPtr;
+      RS_ReplyWithHash(outctx, keyName, &cv->arr, cv->rule);
     }
   }
   return count;
@@ -158,6 +166,7 @@ void sendChunk(AREQ *req, RedisModuleCtx *outctx, size_t limit) {
   cachedVars cv = {0};
   cv.lastLk = AGPLN_GetLookup(&req->ap, NULL, AGPLN_GETLOOKUP_LAST);
   cv.lastAstp = AGPLN_GetArrangeStep(&req->ap);
+  cv.rule = req->sctx ? req->sctx->spec->rule : NULL;
 
   RedisModule_ReplyWithArray(outctx, REDISMODULE_POSTPONED_ARRAY_LEN);
 
@@ -198,6 +207,7 @@ void sendChunk(AREQ *req, RedisModuleCtx *outctx, size_t limit) {
 
 done:
   SearchResult_Destroy(&r);
+  if (cv.arr) array_free(cv.arr);
   if (rc != RS_RESULT_OK) {
     req->stateflags |= QEXEC_S_ITERDONE;
   }
@@ -224,8 +234,16 @@ static int buildRequest(RedisModuleCtx *ctx, RedisModuleString **argv, int argc,
   RedisSearchCtx *sctx = NULL;
   RedisModuleCtx *thctx = NULL;
 
-  if (type == COMMAND_SEARCH) {
-    (*r)->reqflags |= QEXEC_F_IS_SEARCH;
+  switch (type) {
+    case COMMAND_SEARCH:
+      (*r)->reqflags |= QEXEC_F_IS_SEARCH;
+      break;
+    case COMMAND_AGGREGATE:
+      // On FT.AGGREGATE, we don't want to load fields unless specified
+      (*r)->reqflags |= QEXEC_F_EXPLICIT_RETURN;
+      break;
+    case COMMAND_EXPLAIN:
+      break;
   }
 
   if (AREQ_Compile(*r, argv + 2, argc - 2, status) != REDISMODULE_OK) {
