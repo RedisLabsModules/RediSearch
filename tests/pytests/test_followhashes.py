@@ -563,7 +563,7 @@ def testExpiredDuringAggregate(env):
 def testSkipInitialScan(env):
     conn = getConnectionByEnv(env)
     conn.execute_command('HSET', 'a', 'test', 'hello', 'text', 'world')
-    
+
     # Regular
     env.expect('FT.CREATE idx SCHEMA test TEXT').ok()
     waitForIndex(env, 'idx')
@@ -592,7 +592,7 @@ def testWrongFieldType(env):
     res_actual = env.cmd('FT.INFO idx')
     res_actual = {res_actual[i]: res_actual[i + 1] for i in range(0, len(res_actual), 2)}
     env.assertEqual(str(res_actual['hash_indexing_failures']), '1')
-    
+
 def testDocIndexedInTwoIndexes():
     env = Env(moduleArgs='MAXDOCTABLESIZE 50')
     env.skipOnCluster()
@@ -677,4 +677,36 @@ def testIssue1571WithRename(env):
     env.expect('ft.search', 'idx1', 'foo*').equal([1L, 'idx1:{doc}1', ['t', 'foo1', 'index', 'yes']])
     env.expect('ft.search', 'idx2', 'foo*').equal([0L])
 
+def testNoIndexIfNoMatch(env):
+    env.skipOnCluster()
+
+    # setting default for debugging
+    env.expect('FT.CONFIG', 'SET', 'INDEX_NO_SCHEMA_MATCH', 'FALSE').ok()
+
+    # doc without match should not appear in search results
+    env.expect('FT.CREATE idx SCHEMA t TEXT txt TEXT').ok()
+    env.expect('HSET', 'doc1', 'foo', 'bar').equal(1L)
+    env.expect('FT.SEARCH', 'idx', '*').equal([0L])
+
+    # doc w/o a match replaces a doc with a match
+    env.expect('HSET', 'doc2', 't', 'bar').equal(1L)
+    env.expect('FT.SEARCH', 'idx', '*').equal([1L, 'doc2', ['t', 'bar']])
+
+    env.expect('HSET', 'doc2', 'foo', 'bar').equal(1L)
+    env.expect('HDEL', 'doc2', 't').equal(1L)    
+    env.expect('FT.SEARCH', 'idx', '*').equal([0L])
+
+    # doc with two matches remove a single match
+    env.expect('HSET', 'doc3', 't', 'bar', 'txt', 'xyz').equal(2L)
+    env.expect('FT.SEARCH', 'idx', '*').equal([1L, 'doc3', ['t', 'bar', 'txt', 'xyz']])
+    env.expect('HDEL', 'doc3', 't').equal(1L)    
+    env.expect('FT.SEARCH', 'idx', '*').equal([1L, 'doc3', ['txt', 'xyz']])
+
+    env.expect('FLUSHALL')
+
+    # doc w/o a match appears in search results with INDEX_NO_SCHEMA_MATCH enabled
+    env.expect('FT.CONFIG', 'SET', 'INDEX_NO_SCHEMA_MATCH', 'TRUE').ok()
+    env.expect('FT.CREATE idx SCHEMA t TEXT').ok()
+    env.expect('HSET', 'doc4', 'foo', 'bar').equal(1L)
+    env.expect('FT.SEARCH', 'idx', '*').equal([1L, 'doc4', ['foo', 'bar']])
 

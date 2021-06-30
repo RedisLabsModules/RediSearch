@@ -117,8 +117,20 @@ static int AddDocumentCtx_SetDocument(RSAddDocumentCtx *aCtx, IndexSpec *sp) {
 
   if (hasTextFields || hasOtherFields) {
     aCtx->stateFlags |= ACTX_F_INDEXABLES;
-  } else {
+  } else if (RSGlobalConfig.indexNoSchemaMatch == 1) {
     aCtx->stateFlags &= ~ACTX_F_INDEXABLES;
+  } else {
+    QueryError_SetCode(&aCtx->status, QUERY_ENOMATCH);
+    int rc = DocTable_DeleteR(&sp->docs, doc->docKey);
+    if (rc) {
+      sp->stats.numDocuments--;
+
+      // Increment the index's garbage collector's scanning frequency after document deletions
+      if (sp->gc) {
+        GCContext_OnDelete(sp->gc);
+      }
+    }
+    return -1;
   }
 
   if (!hasTextFields) {
@@ -280,15 +292,21 @@ static int AddDocumentCtx_ReplaceMerge(RSAddDocumentCtx *aCtx, RedisSearchCtx *s
   }
   if (rv != REDISMODULE_OK) {
     QueryError_SetError(&aCtx->status, QUERY_ENODOC, "Could not load existing document");
-    aCtx->donecb(aCtx, sctx->redisCtx, aCtx->donecbData);
-    AddDocumentCtx_Free(aCtx);
-    return 1;
+    goto error;
   }
 
   // Keep hold of the new fields.
   Document_MakeStringsOwner(aCtx->doc);
-  AddDocumentCtx_SetDocument(aCtx, sctx->spec);
+  if (AddDocumentCtx_SetDocument(aCtx, sctx->spec) != 0) {
+    QueryError_SetCode(&aCtx->status, QUERY_ENOMATCH);
+    goto error;
+  }
   return 0;
+
+error:
+  aCtx->donecb(aCtx, sctx->redisCtx, aCtx->donecbData);
+  AddDocumentCtx_Free(aCtx);
+  return 1;
 }
 
 static int handlePartialUpdate(RSAddDocumentCtx *aCtx, RedisSearchCtx *sctx) {
