@@ -229,8 +229,6 @@ FT.CREATE idx ON JSON SCHEMA $.title AS title TEXT $.categories AS categories TA
         is to be split into individual tags. The default is `,`. The value
         must be a single character.
 
-
-
 #### Complexity
 O(1)
 
