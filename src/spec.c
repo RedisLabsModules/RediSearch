@@ -1913,6 +1913,8 @@ int IndexSpec_UpdateDoc(IndexSpec *spec, RedisModuleCtx *ctx, RedisModuleString 
   }
 
   if (rv != REDISMODULE_OK) {
+    spec->stats.indexingFailures++;
+
     // if a document did not load properly, it is deleted
     // to prevent mismatch of index and hash
     DocTable_DeleteR(&spec->docs, key);
